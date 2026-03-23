@@ -13,7 +13,17 @@ def _require_env(key: str) -> str:
     return value
 
 TELEGRAM_BOT_TOKEN: str = _require_env("TELEGRAM_BOT_TOKEN")
-OPENAI_API_KEY: str = _require_env("OPENAI_API_KEY")
+
+# API keys — хотя бы один должен быть задан
+DEEPSEEK_API_KEY: str = os.environ.get("OPENAI_API_KEY_depseak", "")
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY_openAi", "")
+
+if not DEEPSEEK_API_KEY and not OPENAI_API_KEY:
+    print("ERROR: Задайте хотя бы один ключ: OPENAI_API_KEY_depseak или OPENAI_API_KEY_openAi")
+    sys.exit(1)
+
+DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+DEEPSEEK_MODEL: str = "deepseek-chat"
 
 TASKS_FILE: str = "tasks.json"
 GPT_MODEL: str = "gpt-4o-mini"

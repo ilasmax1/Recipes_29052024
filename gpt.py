@@ -2,14 +2,15 @@ import logging
 import tempfile
 from pathlib import Path
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, APIStatusError
 
-from config import OPENAI_API_KEY, GPT_MODEL, WHISPER_MODEL, TODO_KEYWORDS
+from config import (
+    DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
+    OPENAI_API_KEY, GPT_MODEL,
+    WHISPER_MODEL, TODO_KEYWORDS,
+)
 
 logger = logging.getLogger(__name__)
-
-# Single shared client instance (connection pooling)
-_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # Whisper file size limit: 25 MB
 WHISPER_MAX_BYTES = 24 * 1024 * 1024
@@ -17,16 +18,29 @@ WHISPER_MAX_BYTES = 24 * 1024 * 1024
 # Telegram message character limit
 TG_MESSAGE_LIMIT = 4096
 
+# Клиент DeepSeek (приоритет — дешевле)
+_deepseek_client: AsyncOpenAI | None = (
+    AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+    if DEEPSEEK_API_KEY else None
+)
+
+# Клиент OpenAI (резервный)
+_openai_client: AsyncOpenAI | None = (
+    AsyncOpenAI(api_key=OPENAI_API_KEY)
+    if OPENAI_API_KEY else None
+)
+
 
 async def transcribe_voice(ogg_bytes: bytes) -> str:
     """
     Send raw OGG bytes to OpenAI Whisper API.
-    Returns transcribed text string.
-
-    Bug prevention:
-    - tempfile MUST have .ogg suffix so OpenAI SDK can infer MIME type
-    - language="ru" improves accuracy and reduces hallucinations on Russian speech
+    Whisper доступен только у OpenAI — DeepSeek его не поддерживает.
     """
+    if not _openai_client:
+        raise RuntimeError(
+            "Транскрипция голоса требует OPENAI_API_KEY_openAi. Ключ не задан."
+        )
+
     if len(ogg_bytes) > WHISPER_MAX_BYTES:
         raise ValueError(
             f"Voice file too large: {len(ogg_bytes)} bytes (max {WHISPER_MAX_BYTES})"
@@ -39,7 +53,7 @@ async def transcribe_voice(ogg_bytes: bytes) -> str:
             tmp_path = Path(tmp.name)
 
         with tmp_path.open("rb") as audio_file:
-            response = await _client.audio.transcriptions.create(
+            response = await _openai_client.audio.transcriptions.create(
                 model=WHISPER_MODEL,
                 file=audio_file,
                 language="ru",
@@ -67,15 +81,9 @@ def classify_intent(text: str) -> str:
     return "question"
 
 
-async def ask_chatgpt(question: str) -> str:
-    """
-    Send a question to ChatGPT and return the answer.
-    If answer exceeds Telegram limit, it will be truncated with a notice.
-    """
-    logger.info("ChatGPT question: %s", question)
-
-    response = await _client.chat.completions.create(
-        model=GPT_MODEL,
+async def _chat_complete(client: AsyncOpenAI, model: str, question: str) -> str:
+    response = await client.chat.completions.create(
+        model=model,
         messages=[
             {
                 "role": "system",
@@ -90,10 +98,30 @@ async def ask_chatgpt(question: str) -> str:
         max_tokens=1024,
         temperature=0.7,
     )
+    return response.choices[0].message.content.strip()
 
-    answer = response.choices[0].message.content.strip()
-    logger.info("ChatGPT answer (%d chars)", len(answer))
-    return answer
+
+async def ask_chatgpt(question: str) -> str:
+    """
+    Отправляет вопрос в DeepSeek (приоритет) или OpenAI (резерв).
+    Если DeepSeek недоступен — автоматически переключается на OpenAI.
+    """
+    logger.info("Question: %s", question)
+
+    if _deepseek_client:
+        try:
+            answer = await _chat_complete(_deepseek_client, DEEPSEEK_MODEL, question)
+            logger.info("DeepSeek answer (%d chars)", len(answer))
+            return answer
+        except (APIConnectionError, APIStatusError) as e:
+            logger.warning("DeepSeek failed (%s), falling back to OpenAI", e)
+
+    if _openai_client:
+        answer = await _chat_complete(_openai_client, GPT_MODEL, question)
+        logger.info("OpenAI answer (%d chars)", len(answer))
+        return answer
+
+    raise RuntimeError("Нет доступных AI-провайдеров. Проверьте ключи в .env.")
 
 
 def split_long_message(text: str, limit: int = TG_MESSAGE_LIMIT) -> list:
@@ -109,7 +137,6 @@ def split_long_message(text: str, limit: int = TG_MESSAGE_LIMIT) -> list:
         if len(text) <= limit:
             chunks.append(text)
             break
-        # Try to split at a newline before the limit
         split_at = text.rfind("\n", 0, limit)
         if split_at == -1:
             split_at = limit
