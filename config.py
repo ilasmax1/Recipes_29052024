@@ -13,7 +13,7 @@ def _require_env(key: str) -> str:
     return value
 
 TELEGRAM_BOT_TOKEN: str = _require_env("TELEGRAM_BOT_TOKEN")
-DEEPSEEK_API_KEY: str = _require_env("depseak_api")
+DEEPSEEK_API_KEY: str = _require_env("DEEPSEEK_API_KEY")
 
 TASKS_FILE: str = "tasks.json"
 GPT_MODEL: str = "deepseek-chat"
