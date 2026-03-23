@@ -1,0 +1,22 @@
+# Environment secrets - NEVER commit
+.env
+
+# Runtime data (user-private)
+tasks.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# Virtual environments
+venv/
+.venv/
+env/
